@@ -57,8 +57,6 @@ async function operator(proxies = [], targetPlatform, env) {
     return validProxies
 
     async function check(proxy) {
-        // $.info(`[${proxy.name}] 检测`)
-        // $.info(`检测 ${JSON.stringify(proxy, null, 2)}`)
         const id = cacheEnabled
             ? `availability:${url}:${method}:${validStatus}:${JSON.stringify(
                 Object.fromEntries(
