@@ -6,223 +6,117 @@
  * - [retries] 重试次数 默认 1
  * - [retry_delay] 重试延时(单位: 毫秒) 默认 1000
  * - [concurrency] 并发数 默认 10
- * - [url] 检测的 URL. 在 URL query 参数中使用需要 encodeURIComponent. 直接使用前端的可视化参数编辑不需要 encodeURIComponent. 默认 http://connectivitycheck.platform.hicloud.com/generate_204
- * - [ua] 请求头 User-Agent. 在 URL query 参数中使用需要 encodeURIComponent. 直接使用前端的可视化参数编辑不需要 encodeURIComponent. 默认 Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1
- * - [status] 合法的状态码的正则表达式. 在 URL query 参数中使用需要 encodeURIComponent. 直接使用前端的可视化参数编辑不需要 encodeURIComponent. 默认 204
- * - [method] 请求方法. 默认 head, 如果测试 URL 不支持, 可设为 get
- * - [max_latency] 最大延迟(单位: 毫秒). 超过此延迟的节点视为不可用. 默认不限制
- * - [show_latency] 显示延迟. 默认不显示. 注: 即使不开启这个参数, 节点上也会添加一个 _latency 字段
- * - [include_unsupported_proxy] 传递给运行环境时, 包含官方/商店版不支持的协议. 默认不包含. 若开启, 需要保证你的运行环境确实支持这些协议, 不然会报错
- * - [keep_incompatible] 保留当前客户端不兼容的协议. 默认不保留.
- * - [cache] 使用缓存, 默认不使用缓存
- * - [disable_failed_cache/ignore_failed_error] 禁用失败缓存. 即不缓存失败结果
- * 关于缓存时长
- * 当使用相关脚本时, 若在对应的脚本中使用参数(⚠ 别忘了这个, 一般为 cache, 值设为 true 即可)开启缓存
- * 可在前端(>=2.16.0) 配置各项缓存的默认时长
- * 持久化缓存数据在 JSON 里
- * 可以在脚本的前面添加一个脚本操作, 实现保留 1 小时的缓存. 这样比较灵活
- * async function operator() {
- *     scriptResourceCache._cleanup(undefined, 1 * 3600 * 1000);
- * }
+ * - [url] 检测的 URL
+ * - [ua] 请求头 User-Agent
+ * - [status] 合法的状态码的正则表达式 默认 204
+ * - [method] 请求方法 默认 head
+ * - [max_latency] 最大延迟(单位: 毫秒). 超过此延迟的节点视为不可用 默认不限制
+ * - [show_latency] 显示延迟 默认不显示
+ * - [include_unsupported_proxy] 包含官方/商店版不支持的协议
+ * - [keep_incompatible] 保留当前客户端不兼容的协议
  */
 
 async function operator(proxies = [], targetPlatform, env) {
     const $ = $substore
     const {isLoon, isSurge} = $.env
     if (!isLoon && !isSurge) throw new Error('仅支持 Loon 和 Surge(ability=http-client-policy)')
-    const cacheEnabled = $arguments.cache
-    const disableFailedCache = $arguments.disable_failed_cache || $arguments.ignore_failed_error
-    const cache = scriptResourceCache
-    const method = $arguments.method || 'head'
-    const keepIncompatible = $arguments.keep_incompatible
-    const includeUnsupportedProxy = $arguments.include_unsupported_proxy
-    const maxLatency = parseFloat($arguments.max_latency || 0)
-    const validStatus = new RegExp($arguments.status || '204')
-    const url = decodeURIComponent($arguments.url || 'http://connectivitycheck.platform.hicloud.com/generate_204')
-    const ua = decodeURIComponent(
-        $arguments.ua ||
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1'
-    )
-    const target = isLoon ? 'Loon' : isSurge ? 'Surge' : undefined
-    const validProxies = []
-    const incompatibleProxies = []
-    const failedProxies = []
 
-    const concurrency = parseInt($arguments.concurrency || 10) // 一组并发数
-    await executeAsyncTasks(
-        proxies.map(proxy => () => check(proxy)),
-        {concurrency}
-    )
+    // ── 配置 ──
+    const C = {
+        method: $arguments.method || 'head',
+        keepIncompatible: $arguments.keep_incompatible,
+        includeUnsupported: $arguments.include_unsupported_proxy,
+        maxLatency: parseFloat($arguments.max_latency || 0),
+        showLatency: $arguments.show_latency,
+        validStatus: new RegExp($arguments.status || '204'),
+        timeout: parseFloat($arguments.timeout || 5000),
+        retries: parseFloat($arguments.retries ?? 1),
+        retryDelay: parseFloat($arguments.retry_delay ?? 1000),
+        concurrency: parseInt($arguments.concurrency || 10),
+        target: isLoon ? 'Loon' : 'Surge',
+    }
 
-    return validProxies
-
-    async function check(proxy) {
-        const id = cacheEnabled
-            ? `availability:${url}:${method}:${validStatus}:${JSON.stringify(
-                Object.fromEntries(
-                    Object.entries(proxy).filter(([key]) => !/^(name|collectionName|subName|id|_.*)$/i.test(key))
-                )
-            )}`
-            : undefined
-        // $.info(`检测 ${id}`)
+    function safeDecode(raw, fallback) {
+        if (!raw) return fallback
         try {
-            const node = ProxyUtils.produce([proxy], target, undefined, {
-                'include-unsupported-proxy': includeUnsupportedProxy,
-            })
-            if (node) {
-                const cached = cache.get(id)
-                if (cacheEnabled && cached) {
-                    if (cached.latency) {
-                        const cachedLatency = parseInt(cached.latency)
-                        if (maxLatency && cachedLatency > maxLatency) {
-                            $.info(`[${proxy.name}] 缓存延迟 ${cachedLatency}ms 超过限制 ${maxLatency}ms`)
-                            if (disableFailedCache) {
-                                // 不使用失败缓存，继续请求
-                            } else {
-                                return
-                            }
-                        } else {
-                            validProxies.push({
-                                ...proxy,
-                                name: `${$arguments.show_latency ? `[${cached.latency}] ` : ''}${proxy.name}`,
-                                _latency: cached.latency,
-                            })
-                            $.info(`[${proxy.name}] 使用成功缓存`)
-                            return
-                        }
-                    } else if (disableFailedCache) {
-                        $.info(`[${proxy.name}] 不使用失败缓存`)
-                    } else {
-                        $.info(`[${proxy.name}] 使用失败缓存`)
-                        return
-                    }
-                }
-                // 请求
-                const startedAt = Date.now()
-                const res = await http({
-                    method,
-                    headers: {
-                        'User-Agent': ua,
-                    },
+            return decodeURIComponent(raw)
+        } catch {
+            return raw
+        }
+    }
+
+    const url = safeDecode($arguments.url,
+        'http://connectivitycheck.platform.hicloud.com/generate_204')
+    const ua = safeDecode($arguments.ua,
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1')
+    const validProxies = []
+
+    // ── HTTP 请求(带重试) ──
+    async function request(node) {
+        let lastError
+        for (let i = 0; i <= C.retries; i++) {
+            try {
+                return await $.http[C.method]({
+                    method: C.method,
+                    headers: {'User-Agent': ua},
                     url,
                     'policy-descriptor': node,
                     node,
+                    timeout: C.timeout,
                 })
-                const status = parseInt(res.status || res.statusCode || 200)
-                let latency = ''
-                latency = `${Date.now() - startedAt}`
-                $.info(`[${proxy.name}] status: ${status}, latency: ${latency}`)
-                // 判断响应
-                if (validStatus.test(status)) {
-                    const latencyNum = parseInt(latency)
-                    if (maxLatency && latencyNum > maxLatency) {
-                        $.info(`[${proxy.name}] 延迟 ${latencyNum}ms 超过限制 ${maxLatency}ms`)
-                        if (cacheEnabled) {
-                            $.info(`[${proxy.name}] 设置失败缓存`)
-                            cache.set(id, {})
-                        }
-                        failedProxies.push(proxy)
-                    } else {
-                        validProxies.push({
-                            ...proxy,
-                            name: `${$arguments.show_latency ? `[${latency}] ` : ''}${proxy.name}`,
-                            _latency: latency,
-                        })
-                        if (cacheEnabled) {
-                            $.info(`[${proxy.name}] 设置成功缓存`)
-                            cache.set(id, {latency})
-                        }
-                    }
-                } else {
-                    if (cacheEnabled) {
-                        $.info(`[${proxy.name}] 设置失败缓存`)
-                        cache.set(id, {})
-                    }
-                    failedProxies.push(proxy)
-                }
+            } catch (e) {
+                lastError = e
+                if (i < C.retries) await $.wait(C.retryDelay * (i + 1))
+            }
+        }
+        throw lastError
+    }
+
+    // ── 单节点检测 ──
+    async function check(proxy) {
+        try {
+            const node = ProxyUtils.produce([proxy], C.target, undefined, {
+                'include-unsupported-proxy': C.includeUnsupported,
+            })
+
+            if (!node) {
+                if (C.keepIncompatible) validProxies.push(proxy)
+                return
+            }
+
+            const t0 = Date.now()
+            const res = await request(node)
+            const latency = Date.now() - t0
+            const status = parseInt(res.status || res.statusCode || 200)
+            $.info(`[${proxy.name}] status: ${status}, latency: ${latency}`)
+
+            if (C.validStatus.test(status) && (!C.maxLatency || latency <= C.maxLatency)) {
+                validProxies.push({
+                    ...proxy,
+                    name: `${C.showLatency ? `[${latency}] ` : ''}${proxy.name}`,
+                    _latency: latency,
+                })
             } else {
-                if (keepIncompatible) {
-                    validProxies.push(proxy)
-                }
-                incompatibleProxies.push(proxy)
+                const reason = !C.validStatus.test(status)
+                    ? `状态码 ${status} 不匹配`
+                    : `延迟 ${latency}ms 超过限制 ${C.maxLatency}ms`
+                $.info(`[${proxy.name}] ${reason}`)
             }
         } catch (e) {
             $.error(`[${proxy.name}] ${e.message ?? e}`)
-            if (cacheEnabled) {
-                $.info(`[${proxy.name}] 设置失败缓存`)
-                cache.set(id, {})
-            }
-            failedProxies.push(proxy)
         }
     }
 
-    // 请求
-    async function http(opt = {}) {
-        const METHOD = opt.method || 'get'
-        const TIMEOUT = parseFloat(opt.timeout || $arguments.timeout || 5000)
-        const RETRIES = parseFloat(opt.retries ?? $arguments.retries ?? 1)
-        const RETRY_DELAY = parseFloat(opt.retry_delay ?? $arguments.retry_delay ?? 1000)
+    // ── 并发执行 ──
+    const tasks = proxies.map(p => () => check(p))
+    const limit = Math.min(C.concurrency, tasks.length)
+    let cursor = 0
 
-        let count = 0
-        const fn = async () => {
-            try {
-                return await $.http[METHOD]({...opt, timeout: TIMEOUT})
-            } catch (e) {
-                // $.error(e)
-                if (count < RETRIES) {
-                    count++
-                    const delay = RETRY_DELAY * count
-                    // $.info(`第 ${count} 次请求失败: ${e.message || e}, 等待 ${delay / 1000}s 后重试`)
-                    await $.wait(delay)
-                    return await fn()
-                } else {
-                    throw e
-                }
-            }
-        }
-        return await fn()
-    }
-
-    function executeAsyncTasks(tasks, {wrap, result, concurrency = 1} = {}) {
-        return new Promise(async (resolve, reject) => {
-            try {
-                let running = 0
-                const results = []
-
-                let index = 0
-
-                function executeNextTask() {
-                    while (index < tasks.length && running < concurrency) {
-                        const taskIndex = index++
-                        const currentTask = tasks[taskIndex]
-                        running++
-
-                        currentTask()
-                            .then(data => {
-                                if (result) {
-                                    results[taskIndex] = wrap ? {data} : data
-                                }
-                            })
-                            .catch(error => {
-                                if (result) {
-                                    results[taskIndex] = wrap ? {error} : error
-                                }
-                            })
-                            .finally(() => {
-                                running--
-                                executeNextTask()
-                            })
-                    }
-
-                    if (running === 0) {
-                        return resolve(result ? results : undefined)
-                    }
-                }
-
-                await executeNextTask()
-            } catch (e) {
-                reject(e)
-            }
+    await Promise.all(
+        Array.from({length: limit}, async () => {
+            while (cursor < tasks.length) await tasks[cursor++]()
         })
-    }
+    )
+
+    return validProxies
 }
