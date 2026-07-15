@@ -14,6 +14,7 @@
  * - [show_latency] 显示延迟 默认不显示
  * - [include_unsupported_proxy] 包含官方/商店版不支持的协议
  * - [keep_incompatible] 保留当前客户端不兼容的协议
+ * - [sort] 按延迟升序排序 默认不排序
  */
 
 async function operator(proxies = [], targetPlatform, env) {
@@ -33,7 +34,8 @@ async function operator(proxies = [], targetPlatform, env) {
         retries: parseFloat($arguments.retries ?? 1),
         retryDelay: parseFloat($arguments.retry_delay ?? 1000),
         concurrency: parseInt($arguments.concurrency || 10),
-        target: isLoon ? 'Loon' : 'Surge',
+        sort:       $arguments.sort,
+        target:     isLoon ? 'Loon' : 'Surge',
     }
 
     function safeDecode(raw, fallback) {
@@ -117,6 +119,8 @@ async function operator(proxies = [], targetPlatform, env) {
             while (cursor < tasks.length) await tasks[cursor++]()
         })
     )
+
+    if (C.sort) validProxies.sort((a, b) => parseInt(a._latency) - parseInt(b._latency))
 
     return validProxies
 }
