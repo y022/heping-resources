@@ -1,0 +1,3 @@
+# > Tailscale路由规则相关配置
+DOMAIN-SUFFIX,tail44630f.ts.net,Tailscale
+IP-CIDR,100.64.0.0/24,Tailscale
